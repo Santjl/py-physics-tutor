@@ -34,6 +34,19 @@ EXERCISE_MARKERS = [
     "solucao",
 ]
 
+THEORY_MARKERS = [
+    "teorema",
+    "definicao",
+    "lei de",
+    "principio de",
+    "demonstracao",
+    "prova",
+    "conceito",
+    "introducao",
+    "capitulo",
+    "secao",
+]
+
 CHAPTER_REGEX = re.compile(r"(?mi)^\s*cap[ií]tulo\s+\d+[^\n]*")
 SECTION_REGEX = re.compile(r"(?mi)^\s*se[cç][aã]o\s+[\d\.]+[^\n]*")
 
@@ -47,7 +60,10 @@ def _classify_chunk_type(text: str) -> str:
     for marker in EXERCISE_MARKERS:
         if marker in normalized:
             return "exercise"
-    return "theory" if normalized.strip() else "unknown"
+    for marker in THEORY_MARKERS:
+        if marker in normalized:
+            return "theory"
+    return "unknown"
 
 
 def _extract_chapter_title(text: str) -> str | None:
@@ -214,8 +230,11 @@ def process_document_inline(db: Session, document: models.Document, pdf_bytes: b
         chunks = prepare_chunks(pages)
 
         if not chunks:
-            logger.warning("Documento %s não gerou chunks - pode estar vazio ou ser PDF de imagens", document.id)
-            document.status = "ready"
+            logger.error(
+                "Documento %s não gerou chunks - PDF pode estar vazio ou ser composto apenas por imagens (sem OCR)",
+                document.id,
+            )
+            document.status = "failed"
             db.commit()
             return
 

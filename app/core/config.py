@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     secret_key: str = "change-me"
     access_token_expire_hours: int = 24
 
+    # CORS
+    cors_origins: list[str] = ["*"]
+
     # Hybrid retrieval settings
     retrieval_semantic_weight: float = 0.6
     retrieval_bm25_weight: float = 0.4
@@ -18,6 +21,7 @@ class Settings(BaseSettings):
     retrieval_rrf_k: int = 60
     retrieval_mmr_lambda: float = 0.7
     retrieval_fts_config: str = "portuguese_unaccent"
+    retrieval_max_distance: float = 0.7
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
 

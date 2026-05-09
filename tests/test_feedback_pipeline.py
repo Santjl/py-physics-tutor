@@ -131,8 +131,8 @@ def test_summary_is_computed_in_code():
     summary = fb._build_summary(attempt)
     assert summary.score == 1.0
     assert summary.total == 3
-    assert summary.strengths == ["Answered correctly"]
-    assert summary.weaknesses == ["Missed questions"]
+    assert summary.strengths == ["Respondeu corretamente"]
+    assert summary.weaknesses == ["Questoes com erro"]
 
 
 def test_study_grouping_unique_sorted_pages():
@@ -226,7 +226,7 @@ def test_default_feedback_populates_new_fields():
 def test_summary_perfect_score():
     attempt = models.Attempt(id=1, score=5.0, total=5)
     summary = fb._build_summary(attempt)
-    assert summary.strengths == ["Answered correctly"]
+    assert summary.strengths == ["Respondeu corretamente"]
     assert summary.weaknesses == []
 
 
@@ -234,7 +234,7 @@ def test_summary_zero_score():
     attempt = models.Attempt(id=1, score=0.0, total=5)
     summary = fb._build_summary(attempt)
     assert summary.strengths == []
-    assert summary.weaknesses == ["Missed questions"]
+    assert summary.weaknesses == ["Questoes com erro"]
 
 
 def test_correct_answers_are_excluded_from_feedback():

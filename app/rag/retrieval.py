@@ -4,7 +4,7 @@ import logging
 from typing import List, Sequence
 
 import numpy as np
-from sqlalchemy import select, func, cast, literal_column, column
+from sqlalchemy import select, func, cast, literal, literal_column, column
 from sqlalchemy.orm import Session
 from pgvector.sqlalchemy import Vector
 
@@ -36,15 +36,22 @@ def _semantic_search(
     db: Session,
     query_vec: list[float],
     limit: int,
+    max_distance: float = 1.0,
 ) -> list[tuple[int, int]]:
-    """Vector similarity search. Returns [(chunk_id, rank)] with 1-indexed ranks."""
+    """Vector similarity search. Returns [(chunk_id, rank)] with 1-indexed ranks.
+
+    Chunks with cosine distance > *max_distance* are excluded.
+    """
     dim = models.EmbeddingType.dimensions
     distance_expr = func.cosine_distance(
         models.Chunk.embedding,
         cast(query_vec, Vector(dim)),
     )
     rows = db.execute(
-        select(models.Chunk.id).order_by(distance_expr).limit(limit)
+        select(models.Chunk.id)
+        .where(distance_expr <= max_distance)
+        .order_by(distance_expr)
+        .limit(limit)
     ).all()
     return [(row[0], rank + 1) for rank, row in enumerate(rows)]
 
@@ -57,7 +64,7 @@ def _bm25_search(
 ) -> list[tuple[int, int]]:
     """Full-text search via PostgreSQL tsvector. Returns [(chunk_id, rank)]."""
     try:
-        ts_query = func.plainto_tsquery(literal_column(f"'{fts_config}'"), query)
+        ts_query = func.plainto_tsquery(literal(fts_config), query)
         ts_rank = func.ts_rank(column("text_search"), ts_query)
         rows = db.execute(
             select(models.Chunk.id)
@@ -147,7 +154,7 @@ def mmr_rerank(
 
 
 # ---------------------------------------------------------------------------
-# Chunk-type filtering (unchanged from original)
+# Chunk-type filtering
 # ---------------------------------------------------------------------------
 
 def _filter_by_chunk_type(
@@ -179,10 +186,70 @@ def _filter_exercise_chunks(chunks: list[models.Chunk]) -> list[models.Chunk]:
 
 
 # ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def embed_query(query: str) -> list[float]:
+    """Embed a query string via Ollama, normalising dimensions to match the DB."""
+    vec = OllamaEmbeddings().embed_query(query)
+    if not isinstance(vec, list) or not all(isinstance(x, (int, float)) for x in vec):
+        raise RuntimeError("Embedding response is not a list of numbers")
+    dim = models.EmbeddingType.dimensions
+    if len(vec) != dim:
+        vec = (vec + [0.0] * dim)[:dim]
+    return vec
+
+
+def _hybrid_retrieve(
+    db: Session,
+    query_vec: list[float],
+    query: str,
+    candidate_count: int,
+) -> tuple[list[models.Chunk], dict[int, float]]:
+    """Run semantic search + BM25 + RRF, return (candidate_chunks, fused_scores).
+
+    This is the shared core used by both retrieve_chunks and retrieve_exercise_chunks.
+    The caller is responsible for chunk-type filtering and MMR re-ranking.
+    """
+    settings = get_settings()
+
+    semantic_ranks = _semantic_search(db, query_vec, candidate_count, settings.retrieval_max_distance)
+    bm25_ranks = _bm25_search(db, query, candidate_count, settings.retrieval_fts_config)
+
+    fused = reciprocal_rank_fusion(
+        semantic_ranks,
+        bm25_ranks,
+        settings.retrieval_semantic_weight,
+        settings.retrieval_bm25_weight,
+        settings.retrieval_rrf_k,
+    )
+    fused_scores = dict(fused)
+
+    candidate_ids = [chunk_id for chunk_id, _ in fused[:candidate_count]]
+    if not candidate_ids:
+        return [], fused_scores
+
+    candidate_chunks = list(
+        db.scalars(select(models.Chunk).where(models.Chunk.id.in_(candidate_ids))).all()
+    )
+    return candidate_chunks, fused_scores
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def retrieve_chunks(db: Session, query: str, top_k: int = 8) -> Sequence[models.Chunk]:
+def retrieve_chunks(
+    db: Session,
+    query: str,
+    top_k: int = 8,
+    query_vec: list[float] | None = None,
+) -> Sequence[models.Chunk]:
+    """Retrieve theory/unknown chunks relevant to *query*.
+
+    Pass a pre-computed *query_vec* to avoid a redundant embedding call when
+    the same query is used for multiple retrieval paths (e.g. per-question).
+    """
     settings = get_settings()
 
     if db.bind and db.bind.dialect.name == "postgresql":
@@ -190,50 +257,21 @@ def retrieve_chunks(db: Session, query: str, top_k: int = 8) -> Sequence[models.
         if not has_chunks:
             return []
 
-        try:
-            query_vec = OllamaEmbeddings().embed_query(query)
-            if not isinstance(query_vec, list) or not all(isinstance(x, (int, float)) for x in query_vec):
-                raise RuntimeError("Embedding response is not a list of numbers")
-        except Exception:
-            logger.exception("Falling back: failed to embed query for retrieval")
-            base_stmt = select(models.Chunk).order_by(models.Chunk.id)
-            return _filter_by_chunk_type(db, base_stmt, top_k)
-
-        dim = models.EmbeddingType.dimensions
-        if len(query_vec) != dim:
-            query_vec = (query_vec + [0.0] * dim)[:dim]
+        if query_vec is None:
+            try:
+                query_vec = embed_query(query)
+            except Exception:
+                logger.exception("Falling back: failed to embed query for retrieval")
+                base_stmt = select(models.Chunk).order_by(models.Chunk.id)
+                return _filter_by_chunk_type(db, base_stmt, top_k)
 
         candidate_count = top_k * settings.retrieval_candidate_multiplier
+        candidate_chunks, fused_scores = _hybrid_retrieve(db, query_vec, query, candidate_count)
 
-        # 1. Dual retrieval
-        semantic_ranks = _semantic_search(db, query_vec, candidate_count)
-        bm25_ranks = _bm25_search(db, query, candidate_count, settings.retrieval_fts_config)
-
-        # 2. Fuse via RRF
-        fused = reciprocal_rank_fusion(
-            semantic_ranks,
-            bm25_ranks,
-            settings.retrieval_semantic_weight,
-            settings.retrieval_bm25_weight,
-            settings.retrieval_rrf_k,
-        )
-        fused_scores = dict(fused)
-
-        # 3. Load top candidates as ORM objects
-        candidate_ids = [chunk_id for chunk_id, _ in fused[:candidate_count]]
-        if not candidate_ids:
-            return []
-
-        candidate_chunks = list(
-            db.scalars(select(models.Chunk).where(models.Chunk.id.in_(candidate_ids))).all()
-        )
-
-        # 4. Filter by chunk type (theory > unknown, never exercise)
         pool = _filter_chunks_by_type(candidate_chunks)
         if not pool:
             return []
 
-        # 5. MMR re-rank for diversity
         return mmr_rerank(pool, query_vec, fused_scores, settings.retrieval_mmr_lambda, top_k)
 
     # Fallback for tests (SQLite): return earliest chunks for determinism
@@ -241,8 +279,17 @@ def retrieve_chunks(db: Session, query: str, top_k: int = 8) -> Sequence[models.
     return _filter_by_chunk_type(db, base_stmt, top_k)
 
 
-def retrieve_exercise_chunks(db: Session, query: str, top_k: int = 2) -> Sequence[models.Chunk]:
-    """Retrieve exercise-type chunks relevant to the given query."""
+def retrieve_exercise_chunks(
+    db: Session,
+    query: str,
+    top_k: int = 2,
+    query_vec: list[float] | None = None,
+) -> Sequence[models.Chunk]:
+    """Retrieve exercise-type chunks relevant to *query*.
+
+    Pass a pre-computed *query_vec* to avoid a redundant embedding call when
+    the same query is used for multiple retrieval paths (e.g. per-question).
+    """
     settings = get_settings()
 
     if db.bind and db.bind.dialect.name == "postgresql":
@@ -252,47 +299,20 @@ def retrieve_exercise_chunks(db: Session, query: str, top_k: int = 2) -> Sequenc
         if not has_chunks:
             return []
 
-        try:
-            query_vec = OllamaEmbeddings().embed_query(query)
-            if not isinstance(query_vec, list) or not all(isinstance(x, (int, float)) for x in query_vec):
-                raise RuntimeError("Embedding response is not a list of numbers")
-        except Exception:
-            logger.exception("Failed to embed query for exercise retrieval")
-            return []
-
-        dim = models.EmbeddingType.dimensions
-        if len(query_vec) != dim:
-            query_vec = (query_vec + [0.0] * dim)[:dim]
+        if query_vec is None:
+            try:
+                query_vec = embed_query(query)
+            except Exception:
+                logger.exception("Failed to embed query for exercise retrieval")
+                return []
 
         candidate_count = top_k * settings.retrieval_candidate_multiplier
+        candidate_chunks, fused_scores = _hybrid_retrieve(db, query_vec, query, candidate_count)
 
-        # 1. Dual retrieval
-        semantic_ranks = _semantic_search(db, query_vec, candidate_count)
-        bm25_ranks = _bm25_search(db, query, candidate_count, settings.retrieval_fts_config)
-
-        # 2. Fuse via RRF
-        fused = reciprocal_rank_fusion(
-            semantic_ranks,
-            bm25_ranks,
-            settings.retrieval_semantic_weight,
-            settings.retrieval_bm25_weight,
-            settings.retrieval_rrf_k,
-        )
-
-        candidate_ids = [chunk_id for chunk_id, _ in fused[:candidate_count]]
-        if not candidate_ids:
-            return []
-
-        candidate_chunks = list(
-            db.scalars(select(models.Chunk).where(models.Chunk.id.in_(candidate_ids))).all()
-        )
-
-        # Filter to exercise only
         pool = _filter_exercise_chunks(candidate_chunks)
         if not pool:
             return []
 
-        fused_scores = dict(fused)
         return mmr_rerank(pool, query_vec, fused_scores, settings.retrieval_mmr_lambda, top_k)
 
     # Fallback for tests (SQLite)

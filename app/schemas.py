@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -100,6 +100,7 @@ class StudyItem(BaseModel):
     pages: List[int] = Field(default_factory=list)
     chapter: Optional[str] = None
     topic: Optional[str] = None
+    reason: Optional[str] = None
 
 
 class SimilarExercise(BaseModel):
@@ -111,9 +112,15 @@ class SimilarExercise(BaseModel):
 class PerQuestionFeedback(BaseModel):
     question_id: int
     is_correct: bool
+    status: Literal["correct", "incorrect", "partially_correct"] = "incorrect"
     explanation: str
+    correct_reasoning: Optional[str] = None
+    evaluation_summary: Optional[str] = None
     misconception: Optional[str] = None
+    related_concepts: List[str] = Field(default_factory=list)
     tip: Optional[str] = None
+    study_suggestion: Optional[str] = None
+    student_feedback: Optional[str] = None
     similar_question: Optional[SimilarExercise] = None
     study: List[StudyItem] = Field(default_factory=list)
 
@@ -130,3 +137,4 @@ class FeedbackResponse(BaseModel):
     summary: SummaryFeedback
     per_question: List[PerQuestionFeedback]
     global_references: List[Citation] = Field(default_factory=list)
+    related_concepts: List[str] = Field(default_factory=list)

@@ -4,15 +4,17 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import health, questionnaires, auth, documents, feedback
+from app.core.config import get_settings
 from app.core.logging_config import configure_logging
 
 
 def create_app() -> FastAPI:
     configure_logging()
     app = FastAPI(title="Physics Tutor API", version="0.1.0")
+    settings = get_settings()
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
