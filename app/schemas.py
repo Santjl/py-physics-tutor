@@ -44,12 +44,23 @@ class QuestionnaireWithQuestionsCreate(QuestionnaireCreate):
     questions: List[QuestionCreate] = Field(default_factory=list)
 
 
+class QuestionnaireUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+
+
+class QuestionUpdate(BaseModel):
+    statement: Optional[str] = None
+    options: Optional[List[OptionCreate]] = None
+
+
 class QuestionnaireRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     title: str
     description: Optional[str]
+    is_active: bool = True
 
 
 class QuestionnaireDetail(QuestionnaireRead):
@@ -77,6 +88,16 @@ class AttemptResult(BaseModel):
     score: float
     total: int
     answers: List[AttemptAnswerResult]
+
+
+class AttemptHistoryItem(BaseModel):
+    attempt_id: int
+    questionnaire_id: int
+    questionnaire_title: str
+    score: float
+    total: int
+    date: dt.datetime
+    has_feedback: bool
 
 
 class DocumentRead(BaseModel):
@@ -109,20 +130,37 @@ class SimilarExercise(BaseModel):
     description: Optional[str] = None
 
 
+class StudyRecommendation(BaseModel):
+    available: bool = False
+    sources: List[StudyItem] = Field(default_factory=list)
+
+
+class FeedbackQuestionError(BaseModel):
+    question_id: int
+    type: str
+    message: str
+
+
 class PerQuestionFeedback(BaseModel):
     question_id: int
+    selected_option_id: Optional[int] = None
     is_correct: bool
     status: Literal["correct", "incorrect", "partially_correct"] = "incorrect"
     explanation: str
     correct_reasoning: Optional[str] = None
     evaluation_summary: Optional[str] = None
     misconception: Optional[str] = None
+    main_physical_concept: Optional[str] = None
+    why_selected_answer_is_wrong: Optional[str] = None
+    confidence: Literal["alta", "média", "baixa"] = "média"
+    needs_teacher_review: bool = False
     related_concepts: List[str] = Field(default_factory=list)
     tip: Optional[str] = None
     study_suggestion: Optional[str] = None
     student_feedback: Optional[str] = None
     similar_question: Optional[SimilarExercise] = None
     study: List[StudyItem] = Field(default_factory=list)
+    study_recommendation: Optional[StudyRecommendation] = None
 
 
 class SummaryFeedback(BaseModel):
@@ -132,9 +170,19 @@ class SummaryFeedback(BaseModel):
     weaknesses: List[str] = Field(default_factory=list)
 
 
+class FeedbackMetadata(BaseModel):
+    prompt_version: str = "unknown"
+    validator_status: Optional[str] = None
+    regeneration_count: int = 0
+    quota_error_count: int = 0
+
+
 class FeedbackResponse(BaseModel):
     attempt_id: int
+    status: Literal["success", "partial_success"] = "success"
     summary: SummaryFeedback
     per_question: List[PerQuestionFeedback]
     global_references: List[Citation] = Field(default_factory=list)
     related_concepts: List[str] = Field(default_factory=list)
+    errors: List[FeedbackQuestionError] = Field(default_factory=list)
+    metadata: Optional[FeedbackMetadata] = None

@@ -10,13 +10,27 @@ from pgvector.sqlalchemy import Vector
 
 from app import models
 from app.core.config import get_settings
+from app.rag.google_client import GoogleGenAIEmbeddingClient
 from app.rag.ollama_client import OllamaClient
 
 logger = logging.getLogger(__name__)
 
 
+class GeminiEmbeddings:
+    """Embedding wrapper using Google Gemini embeddings."""
+
+    def __init__(self) -> None:
+        self.client = GoogleGenAIEmbeddingClient()
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        return self.client.embed(texts)
+
+    def embed_query(self, text: str) -> List[float]:
+        return self.client.embed([text])[0]
+
+
 class OllamaEmbeddings:
-    """LangChain-compatible embedding wrapper using Ollama HTTP API."""
+    """Embedding wrapper using Ollama HTTP API."""
 
     def __init__(self) -> None:
         self.client = OllamaClient()
@@ -64,6 +78,7 @@ def _bm25_search(
 ) -> list[tuple[int, int]]:
     """Full-text search via PostgreSQL tsvector. Returns [(chunk_id, rank)]."""
     try:
+        savepoint = db.begin_nested()
         ts_query = func.plainto_tsquery(literal(fts_config), query)
         ts_rank = func.ts_rank(column("text_search"), ts_query)
         rows = db.execute(
@@ -72,9 +87,12 @@ def _bm25_search(
             .order_by(ts_rank.desc())
             .limit(limit)
         ).all()
+        savepoint.commit()
+        logger.info("Retrieval mode: BM25 available (%d hits)", len(rows))
         return [(row[0], rank + 1) for rank, row in enumerate(rows)]
-    except Exception:
-        logger.warning("BM25 search unavailable, skipping")
+    except Exception as exc:
+        savepoint.rollback()
+        logger.warning("BM25 search unavailable, skipping: %s", exc)
         return []
 
 
@@ -190,14 +208,42 @@ def _filter_exercise_chunks(chunks: list[models.Chunk]) -> list[models.Chunk]:
 # ---------------------------------------------------------------------------
 
 def embed_query(query: str) -> list[float]:
-    """Embed a query string via Ollama, normalising dimensions to match the DB."""
-    vec = OllamaEmbeddings().embed_query(query)
+    """Embed a query string via configured provider, normalising to DB dimensions."""
+    settings = get_settings()
+    provider = settings.embed_provider.lower().strip()
+    if provider == "ollama":
+        vec = OllamaEmbeddings().embed_query(query)
+    else:
+        vec = GeminiEmbeddings().embed_query(query)
     if not isinstance(vec, list) or not all(isinstance(x, (int, float)) for x in vec):
         raise RuntimeError("Embedding response is not a list of numbers")
     dim = models.EmbeddingType.dimensions
     if len(vec) != dim:
         vec = (vec + [0.0] * dim)[:dim]
     return vec
+
+
+def embed_queries(queries: list[str]) -> list[list[float]]:
+    """Batch embed query strings via configured provider, normalized to DB dimensions."""
+    if not queries:
+        return []
+
+    settings = get_settings()
+    provider = settings.embed_provider.lower().strip()
+    if provider == "ollama":
+        vecs = OllamaEmbeddings().embed_documents(queries)
+    else:
+        vecs = GeminiEmbeddings().embed_documents(queries)
+
+    dim = models.EmbeddingType.dimensions
+    normalized: list[list[float]] = []
+    for vec in vecs:
+        if not isinstance(vec, list) or not all(isinstance(x, (int, float)) for x in vec):
+            raise RuntimeError("Embedding response is not a list of numbers")
+        if len(vec) != dim:
+            vec = (vec + [0.0] * dim)[:dim]
+        normalized.append(vec)
+    return normalized
 
 
 def _hybrid_retrieve(

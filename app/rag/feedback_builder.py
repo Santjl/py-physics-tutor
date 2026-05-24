@@ -12,6 +12,7 @@ from app.rag.feedback_constants import (
     STUDENT_FEEDBACK_MAX_CHARS,
     STUDY_SUGGESTION_MAX_CHARS,
     TIP_MAX_CHARS,
+    WHY_WRONG_MAX_CHARS,
 )
 from app.schemas import (
     Citation,
@@ -108,18 +109,24 @@ def _build_study_groups(
 def _sanitize_per_question_feedback(pq: PerQuestionFeedback) -> PerQuestionFeedback:
     return PerQuestionFeedback(
         question_id=pq.question_id,
+        selected_option_id=pq.selected_option_id,
         is_correct=pq.is_correct,
         status=pq.status,
         explanation=_truncate_chars(pq.explanation or "", EXPLANATION_MAX_CHARS),
         correct_reasoning=_truncate_chars(pq.correct_reasoning or "", EXPLANATION_MAX_CHARS) or None,
         evaluation_summary=_truncate_chars(pq.evaluation_summary or "", EVALUATION_SUMMARY_MAX_CHARS) or None,
         misconception=_truncate_chars(pq.misconception or "", MISCONCEPTION_MAX_CHARS) if pq.misconception else None,
+        main_physical_concept=pq.main_physical_concept,
+        why_selected_answer_is_wrong=_truncate_chars(pq.why_selected_answer_is_wrong or "", WHY_WRONG_MAX_CHARS) or None,
+        confidence=pq.confidence,
+        needs_teacher_review=pq.needs_teacher_review,
         related_concepts=[c.strip() for c in pq.related_concepts if c.strip()][:8],
         tip=_truncate_chars(pq.tip or "", TIP_MAX_CHARS) if pq.tip else None,
         study_suggestion=_truncate_chars(pq.study_suggestion or "", STUDY_SUGGESTION_MAX_CHARS) or None,
         student_feedback=_truncate_chars(pq.student_feedback or "", STUDENT_FEEDBACK_MAX_CHARS) or None,
         similar_question=pq.similar_question,
         study=_sanitize_study_items(pq.study),
+        study_recommendation=pq.study_recommendation,
     )
 
 
@@ -141,6 +148,7 @@ def _default_per_question_feedback(
         )
     return PerQuestionFeedback(
         question_id=ans.question_id,
+        selected_option_id=ans.selected_option_id,
         is_correct=ans.is_correct,
         status="correct" if ans.is_correct else "incorrect",
         explanation=explanation,

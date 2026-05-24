@@ -13,6 +13,7 @@ from app import models
 from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.rag.chunking import build_chunks, estimate_tokens, MAX_INPUT_TOKENS
+from app.rag.google_client import GoogleGenAIEmbeddingClient
 from app.rag.ollama_client import OllamaClient
 
 logger = logging.getLogger(__name__)
@@ -219,6 +220,13 @@ def process_document_inline(db: Session, document: models.Document, pdf_bytes: b
     """
     document.status = "processing"
     db.commit()
+
+    # Check if document was cancelled before we start heavy work
+    db.refresh(document)
+    if document.status == "failed":
+        logger.info("Document %s was cancelled before processing started", document.id)
+        return
+
     logger.info("Processing document %s (%s, %.1f KB)", document.id, filename, len(pdf_bytes) / 1024)
     t0 = time.perf_counter()
 
@@ -240,7 +248,11 @@ def process_document_inline(db: Session, document: models.Document, pdf_bytes: b
 
         # 3. Geração de embeddings
         texts = [c["text"] for c in chunks]
-        client = OllamaClient()
+        provider = get_settings().embed_provider.lower().strip()
+        if provider == "ollama":
+            client = OllamaClient()
+        else:
+            client = GoogleGenAIEmbeddingClient()
         logger.info("Requesting embeddings for %d chunks", len(texts))
         embeddings = client.embed(texts)
         logger.info("Received %d embeddings", len(embeddings))

@@ -120,3 +120,187 @@ def test_question_requires_correct_option_and_unique_letters(client, admin_user)
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp_dup.status_code == 400
+
+
+# ─── Helper ────────────────────────────────────────────────────────────────────
+
+def _create_quiz_with_question(client, token):
+    """Create a questionnaire with one question and return (quiz_id, question_data)."""
+    quiz = client.post(
+        "/questionnaires/full",
+        json={
+            "title": "Test Quiz",
+            "description": "desc",
+            "questions": [
+                {
+                    "statement": "What is 1+1?",
+                    "options": [
+                        {"letter": "A", "text": "1", "is_correct": False},
+                        {"letter": "B", "text": "2", "is_correct": True},
+                    ],
+                }
+            ],
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert quiz.status_code == 201
+    data = quiz.json()
+    return data["id"], data["questions"][0]
+
+
+# ─── Update Questionnaire ─────────────────────────────────────────────────────
+
+def test_update_questionnaire(client, admin_user):
+    token = _login(client, admin_user.email, "secret")
+    quiz_id, _ = _create_quiz_with_question(client, token)
+
+    resp = client.put(
+        f"/questionnaires/{quiz_id}",
+        json={"title": "Updated Title", "description": "new desc"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["title"] == "Updated Title"
+    assert resp.json()["description"] == "new desc"
+
+
+def test_update_questionnaire_empty_title_rejected(client, admin_user):
+    token = _login(client, admin_user.email, "secret")
+    quiz_id, _ = _create_quiz_with_question(client, token)
+
+    resp = client.put(
+        f"/questionnaires/{quiz_id}",
+        json={"title": "  "},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 400
+
+
+# ─── Delete Questionnaire (hard vs soft) ──────────────────────────────────────
+
+def test_delete_questionnaire_hard_when_no_attempts(client, admin_user):
+    token = _login(client, admin_user.email, "secret")
+    quiz_id, _ = _create_quiz_with_question(client, token)
+
+    resp = client.delete(
+        f"/questionnaires/{quiz_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 204
+
+    # Confirm gone
+    get_resp = client.get(f"/questionnaires/{quiz_id}")
+    assert get_resp.status_code == 404
+
+
+def test_delete_questionnaire_soft_when_has_attempts(client, admin_user, student_user):
+    admin_token = _login(client, admin_user.email, "secret")
+    student_token = _login(client, student_user.email, "secret")
+    quiz_id, q_data = _create_quiz_with_question(client, admin_token)
+
+    correct_opt = next(o["id"] for o in q_data["options"] if o["is_correct"])
+    client.post(
+        f"/questionnaires/{quiz_id}/attempts",
+        json={"answers": [{"question_id": q_data["id"], "selected_option_id": correct_opt}]},
+        headers={"Authorization": f"Bearer {student_token}"},
+    )
+
+    resp = client.delete(
+        f"/questionnaires/{quiz_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["is_active"] is False
+
+    # Students can't submit new attempts
+    attempt_resp = client.post(
+        f"/questionnaires/{quiz_id}/attempts",
+        json={"answers": [{"question_id": q_data["id"], "selected_option_id": correct_opt}]},
+        headers={"Authorization": f"Bearer {student_token}"},
+    )
+    assert attempt_resp.status_code == 400
+
+
+def test_activate_questionnaire(client, admin_user, student_user):
+    admin_token = _login(client, admin_user.email, "secret")
+    student_token = _login(client, student_user.email, "secret")
+    quiz_id, q_data = _create_quiz_with_question(client, admin_token)
+
+    correct_opt = next(o["id"] for o in q_data["options"] if o["is_correct"])
+    client.post(
+        f"/questionnaires/{quiz_id}/attempts",
+        json={"answers": [{"question_id": q_data["id"], "selected_option_id": correct_opt}]},
+        headers={"Authorization": f"Bearer {student_token}"},
+    )
+
+    # Deactivate
+    client.delete(f"/questionnaires/{quiz_id}", headers={"Authorization": f"Bearer {admin_token}"})
+
+    # Reactivate
+    resp = client.patch(
+        f"/questionnaires/{quiz_id}/activate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["is_active"] is True
+
+
+# ─── Update Question ──────────────────────────────────────────────────────────
+
+def test_update_question_statement(client, admin_user):
+    token = _login(client, admin_user.email, "secret")
+    quiz_id, q_data = _create_quiz_with_question(client, token)
+
+    resp = client.put(
+        f"/questionnaires/{quiz_id}/questions/{q_data['id']}",
+        json={"statement": "Updated statement"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["statement"] == "Updated statement"
+    assert len(resp.json()["options"]) == 2  # options unchanged
+
+
+def test_update_question_options(client, admin_user):
+    token = _login(client, admin_user.email, "secret")
+    quiz_id, q_data = _create_quiz_with_question(client, token)
+
+    new_options = [
+        {"letter": "A", "text": "No", "is_correct": False},
+        {"letter": "B", "text": "Yes", "is_correct": True},
+        {"letter": "C", "text": "Maybe", "is_correct": False},
+    ]
+    resp = client.put(
+        f"/questionnaires/{quiz_id}/questions/{q_data['id']}",
+        json={"options": new_options},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    assert len(resp.json()["options"]) == 3
+
+
+# ─── Delete Question ──────────────────────────────────────────────────────────
+
+def test_delete_question(client, admin_user):
+    token = _login(client, admin_user.email, "secret")
+    quiz_id, q_data = _create_quiz_with_question(client, token)
+
+    resp = client.delete(
+        f"/questionnaires/{quiz_id}/questions/{q_data['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 204
+
+    questions = client.get(f"/questionnaires/{quiz_id}/questions").json()
+    assert len(questions) == 0
+
+
+def test_delete_question_not_found(client, admin_user):
+    token = _login(client, admin_user.email, "secret")
+    quiz_id, _ = _create_quiz_with_question(client, token)
+
+    resp = client.delete(
+        f"/questionnaires/{quiz_id}/questions/99999",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 404

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Physics Tutor API — a FastAPI backend for creating physics questionnaires, collecting student attempts, and generating personalized feedback using RAG (Retrieval-Augmented Generation) with Ollama. The codebase includes Portuguese (pt-BR) comments and content.
+Physics Tutor API — a FastAPI backend for creating physics questionnaires, collecting student attempts, and generating personalized feedback using RAG (Retrieval-Augmented Generation) with Gemini on Google Cloud. The codebase includes Portuguese (pt-BR) comments and content.
 
 ## Commands
 
@@ -53,13 +53,13 @@ app/db/           → Engine and session factory
 
 ### Key tech decisions
 - **Two-database strategy**: PostgreSQL + pgvector in production; in-memory SQLite for tests. The `EmbeddingType` custom TypeDecorator in `models.py` handles vector columns across both dialects (pgvector vs JSON fallback).
-- **Ollama for LLM**: Uses `httpx` for embeddings API and `langchain-community`'s `ChatOllama` for feedback generation. Ollama runs on the host, accessed via `host.docker.internal` in Docker.
+- **Gemini for LLM**: Uses the `google-genai` SDK for embeddings and feedback generation. Production auth can use Vertex AI via ADC or the Gemini API via API key.
 - **Test mode (`APP_ENV=test`)**: Skips real LLM calls — returns deterministic embeddings and feedback using stored chunks. Controlled via `get_settings().app_env`.
 - **Background PDF processing**: `FastAPI.BackgroundTasks` for async PDF ingestion (synchronous in test mode). Documents go through states: `pending → processing → ready | failed`.
 
 ### RAG pipeline flow
 1. Admin uploads PDF → `rag/processing.py` extracts text (PyMuPDF), splits into token-based chunks with overlap (`rag/chunking.py`)
-2. Chunks classified as `theory`/`exercise`/`unknown` via keyword heuristics, embedded via Ollama, stored with pgvector
+2. Chunks classified as `theory`/`exercise`/`unknown` via keyword heuristics, embedded via Gemini, stored with pgvector
 3. Student requests feedback → `rag/retrieval.py` finds similar theory chunks per question (cosine distance), falls back to `unknown` chunks if no theory found
 4. `rag/feedback.py` builds per-question prompts with retrieved context, calls LLM, includes source citations
 
@@ -82,7 +82,9 @@ Configured via `.env` file or environment (loaded by pydantic-settings):
 |---|---|---|
 | `DATABASE_URL` | `postgresql+psycopg://...` | Database connection string |
 | `APP_ENV` | `dev` | `dev`/`test`/`prod` — test mode disables LLM calls |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
-| `OLLAMA_CHAT_MODEL` | `llama3.1` | Model for feedback generation |
-| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Model for embeddings |
+| `GOOGLE_CLOUD_PROJECT` | `None` | Google Cloud project for Vertex AI |
+| `GOOGLE_CLOUD_LOCATION` | `us-central1` | Vertex AI region |
+| `GOOGLE_GENAI_API_KEY` | `None` | Gemini API key for direct API usage |
+| `GOOGLE_CHAT_MODEL` | `gemini-2.5-flash` | Model for feedback generation |
+| `GOOGLE_EMBED_MODEL` | `text-embedding-005` | Model for embeddings |
 | `SECRET_KEY` | `change-me` | JWT signing key |

@@ -1,28 +1,43 @@
 # Physics Tutor API (Python)
 
-FastAPI + SQLAlchemy backend to create questionnaires, collect attempts, and power RAG-based feedback with Ollama. This repository will be built in small PRs; this first PR ships the scaffold, Docker setup, database migrations, and basic questionnaire CRUD.
+FastAPI + SQLAlchemy backend to create questionnaires, collect attempts, and power RAG-based feedback with Gemini on Google Cloud. This repository will be built in small PRs; this first PR ships the scaffold, Docker setup, database migrations, and basic questionnaire CRUD.
 
 ## Stack
 - FastAPI, Pydantic v2
 - SQLAlchemy 2.0 + Alembic
 - PostgreSQL + pgvector
 - Pytest
-- Ollama (local) for chat + embeddings (RAG planned with LangChain)
+- Gemini via Google Gen AI SDK for chat + embeddings
 
 ## Environment
 - `DATABASE_URL` (e.g. `postgresql+psycopg://postgres:postgres@localhost:5432/quiz_db`)
 - `APP_ENV` = `dev|test|prod`
+- `LLM_PROVIDER` = `google|ollama` (default `google`)
+- `EMBED_PROVIDER` = `google|ollama` (default `google`)
+- `GOOGLE_CLOUD_PROJECT` for Vertex AI auth
+- `GOOGLE_CLOUD_LOCATION` (default `us-central1`)
+- `GOOGLE_GENAI_API_KEY` for Gemini API auth when not using Vertex AI
+- `GOOGLE_CHAT_MODEL` (default `gemini-2.5-flash`)
+- `GOOGLE_EMBED_MODEL` (default `text-embedding-005`)
 - `OLLAMA_BASE_URL` (default `http://localhost:11434`)
-- `OLLAMA_CHAT_MODEL` (default `llama3.1`)
+- `OLLAMA_CHAT_MODEL` (default `qwen3:1.7b`)
 - `OLLAMA_EMBED_MODEL` (default `nomic-embed-text`)
+
+Provider selection:
+- Default behavior uses Gemini on Google Cloud/API for both chat and embeddings.
+- To keep Ollama available but not used, leave providers at default (`google`).
+- To switch back to Ollama later, set `LLM_PROVIDER=ollama` and/or `EMBED_PROVIDER=ollama`.
 
 ## Local setup (host)
 1. Install Python 3.11+.
 2. `python -m venv .venv && . .venv/Scripts/activate` (or `source .venv/bin/activate` on Unix).
 3. `pip install -r requirements.txt`
 4. Set `DATABASE_URL` in a `.env` file or environment.
-5. Run migrations: `alembic upgrade head`
-6. Start API: `uvicorn app.main:app --reload`
+5. Authenticate with Google.
+6. If using Vertex AI, run `gcloud auth application-default login` and set `GOOGLE_CLOUD_PROJECT`.
+7. If using the Gemini API directly, set `GOOGLE_GENAI_API_KEY` instead.
+8. Run migrations: `alembic upgrade head`
+9. Start API: `uvicorn app.main:app --reload`
 
 OpenAPI docs live at `/docs`.
 
@@ -35,13 +50,13 @@ Auth (PR2):
 Documents (PR3):
 - Upload PDF: `POST /documents/upload` (multipart `file`) as admin. In test env, processing is synchronous; otherwise it runs in a background task.
 - Check status: `GET /documents/{id}`.
-- PDFs are parsed with PyMuPDF, chunked (~900 chars, 150 overlap), embedded via Ollama embeddings (`OLLAMA_EMBED_MODEL`, default `nomic-embed-text`), and stored in `chunks` with pgvector.
+- PDFs are parsed with PyMuPDF, chunked (~900 chars, 150 overlap), embedded via Gemini embeddings (`GOOGLE_EMBED_MODEL`, default `text-embedding-005`), and stored in `chunks` with pgvector.
 - RAG orchestration will use LangChain in PR4.
 - Each chunk is classified as `theory`, `exercise`, or `unknown` during ingestion (simple keyword heuristics) and optional chapter/section titles are stored when detected.
 
 Feedback (PR4):
 - Generate feedback: `POST /attempts/{attempt_id}/feedback` as the owning student.
-- Retrieves similar chunks (pgvector) from theory-only content and prompts Ollama (`OLLAMA_CHAT_MODEL`, default `llama3.1`). If no theory chunks are available, it can fall back to `unknown` but never to exercises.
+- Retrieves similar chunks (pgvector) from theory-only content and prompts Gemini (`GOOGLE_CHAT_MODEL`, default `gemini-2.5-flash`). If no theory chunks are available, it can fall back to `unknown` but never to exercises.
 - Test mode (`APP_ENV=test`) avoids LLM calls and returns deterministic feedback using stored chunks.
 
 Hardening (PR5):
@@ -55,8 +70,8 @@ Hardening (PR5):
 
 Notes:
 - The API reads `DATABASE_URL` from the service environment.
-- Ollama is expected on the host at `http://localhost:11434`. The compose file adds `host.docker.internal`; on Linux this requires Docker Engine 20.10+ (host-gateway support).
-- If you run the API on host instead of container, ensure it can reach your Postgres instance and Ollama.
+- If you run the API in Docker, pass through either `GOOGLE_CLOUD_PROJECT` plus Google ADC credentials, or `GOOGLE_GENAI_API_KEY`.
+- If you run the API on host instead of container, ensure it can reach your Postgres instance and that Google credentials are available in the environment.
 
 ## Database migrations
 - Create: `alembic revision -m "message"`

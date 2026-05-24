@@ -10,11 +10,9 @@ from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 DEFAULT_EMBED_DIM = 768
-
-# Configurações de retry
 MAX_RETRIES = 3
-INITIAL_BACKOFF = 1.0  # segundos
-MAX_BACKOFF = 10.0  # segundos
+INITIAL_BACKOFF = 1.0
+MAX_BACKOFF = 10.0
 
 
 class OllamaClient:
@@ -25,15 +23,13 @@ class OllamaClient:
 
     def _post_embeddings(self, texts: List[str], timeout: int = 60) -> dict:
         url = f"{self.base_url}/api/embed"
-        payload = {"model": self.embed_model, "input": texts}  # lista OK
+        payload = {"model": self.embed_model, "input": texts}
         logger.info("Embedding request: %d texts to model %s", len(texts), self.embed_model)
         resp = httpx.post(url, json=payload, timeout=timeout)
         resp.raise_for_status()
         return resp.json()
-        
 
     def _post_with_retry(self, texts: List[str]) -> dict:
-        """Executa POST com retry e backoff exponencial."""
         last_error = None
         backoff = INITIAL_BACKOFF
 
@@ -44,57 +40,46 @@ class OllamaClient:
                 last_error = e
                 logger.warning(
                     "Timeout na tentativa %d/%d para %d textos, aguardando %.1fs",
-                    attempt, MAX_RETRIES, len(texts), backoff
+                    attempt, MAX_RETRIES, len(texts), backoff,
                 )
             except httpx.HTTPStatusError as e:
                 last_error = e
-                # Não retry em erros 4xx (client error)
                 if 400 <= e.response.status_code < 500:
                     logger.error("Erro de cliente (HTTP %d): %s", e.response.status_code, e.response.text)
                     raise
                 logger.warning(
                     "Erro HTTP %d na tentativa %d/%d, aguardando %.1fs",
-                    e.response.status_code, attempt, MAX_RETRIES, backoff
+                    e.response.status_code, attempt, MAX_RETRIES, backoff,
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 last_error = e
                 logger.warning(
                     "Erro na tentativa %d/%d: %s, aguardando %.1fs",
-                    attempt, MAX_RETRIES, str(e), backoff
+                    attempt, MAX_RETRIES, str(e), backoff,
                 )
 
             if attempt < MAX_RETRIES:
                 time.sleep(backoff)
                 backoff = min(backoff * 2, MAX_BACKOFF)
 
-        logger.error("Falha após %d tentativas de embedding", MAX_RETRIES)
+        logger.error("Falha apos %d tentativas de embedding", MAX_RETRIES)
         raise RuntimeError(f"Failed to embed text after {MAX_RETRIES} attempts") from last_error
 
     def embed(self, texts: List[str]) -> List[List[float]]:
-        """
-        Gera embeddings para uma lista de textos.
-
-        Args:
-            texts: Lista de textos para embedding
-
-        Returns:
-            Lista de vetores de embedding (dimensão 768)
-
-        Raises:
-            RuntimeError: Se falhar após todas as tentativas
-        """
         if not texts:
             logger.warning("Lista de textos vazia para embedding")
             return []
 
         if self.settings.app_env.lower() == "test":
-            # Deterministic vector for testing; length matches pgvector dim.
             return [[0.1] * DEFAULT_EMBED_DIM for _ in texts]
 
-        # Log tamanho dos textos para debug
         total_chars = sum(len(t) for t in texts)
-        logger.info("Embedding %d textos (total: %d chars, média: %.0f chars/texto)",
-                    len(texts), total_chars, total_chars / len(texts) if texts else 0)
+        logger.info(
+            "Embedding %d textos (total: %d chars, media: %.0f chars/texto)",
+            len(texts),
+            total_chars,
+            total_chars / len(texts) if texts else 0,
+        )
 
         try:
             data = self._post_with_retry(texts)
@@ -121,11 +106,9 @@ class OllamaClient:
                     f"Unexpected embedding response size: got {len(embeddings)}, expected {len(texts)}"
                 )
 
-        embeddings = [self._normalize_vector(vec, idx, len(texts)) for idx, vec in enumerate(embeddings, start=1)]
-        return embeddings
+        return [self._normalize_vector(vec, idx, len(texts)) for idx, vec in enumerate(embeddings, start=1)]
 
     def _embed_one_by_one(self, texts: List[str]) -> List[List[float]]:
-        """Faz embedding texto por texto (fallback para batches que falham)."""
         results: List[List[float]] = []
         for idx, text in enumerate(texts):
             try:
@@ -151,14 +134,12 @@ class OllamaClient:
             logger.warning("Empty embedding vector for text %d/%d; using zero vector", idx, total)
             return [0.0] * DEFAULT_EMBED_DIM
 
-        # guarantee list[float]
         try:
             vec = list(vec)
         except TypeError:
             logger.warning("Non-iterable embedding vector for text %d/%d; using zero vector", idx, total)
             return [0.0] * DEFAULT_EMBED_DIM
 
-        # validate dimension; pad/truncate to be tolerant
         if len(vec) != DEFAULT_EMBED_DIM:
             logger.warning(
                 "Unexpected embedding dim for text %d/%d: got %d, expected %d",
@@ -173,4 +154,3 @@ class OllamaClient:
                 vec = vec + [0.0] * (DEFAULT_EMBED_DIM - len(vec))
 
         return vec
-

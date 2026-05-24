@@ -22,7 +22,7 @@ services:
       APP_ENV: dev
       DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/quiz_db
       OLLAMA_BASE_URL: http://host.docker.internal:11434
-      OLLAMA_CHAT_MODEL: llama3.1
+      OLLAMA_CHAT_MODEL: qwen3:1.7b
       OLLAMA_EMBED_MODEL: nomic-embed-text
     depends_on:
       db:

@@ -10,10 +10,12 @@ from app import models
 
 # Section headers the LLM may use (normalised to lowercase for matching).
 _SECTION_HEADERS = [
+    "conceito fisico principal",
     "avaliacao",
     "explicacao",
     "raciocinio correto",
     "raciocinio simulado",
+    "por que a resposta esta errada",
     "erro conceitual do aluno",
     "erro conceitual",
     "possivel confusao",
@@ -154,6 +156,16 @@ def _extract_misconception(sections: dict[str, str]) -> str | None:
         if key in sections:
             return sections[key]
     return None
+
+
+def _extract_main_physical_concept(sections: dict[str, str]) -> str | None:
+    """Extract the main physical concept identified by the LLM."""
+    return sections.get("conceito fisico principal") or None
+
+
+def _extract_why_wrong(sections: dict[str, str]) -> str | None:
+    """Extract the explanation of why the selected answer is wrong."""
+    return sections.get("por que a resposta esta errada") or None
 
 
 def _extract_tip(sections: dict[str, str]) -> str | None:

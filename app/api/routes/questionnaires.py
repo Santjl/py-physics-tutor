@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -16,7 +17,9 @@ from app.schemas import (
     QuestionnaireCreate,
     QuestionnaireDetail,
     QuestionnaireRead,
+    QuestionnaireUpdate,
     QuestionnaireWithQuestionsCreate,
+    QuestionUpdate,
     AttemptAnswerResult,
 )
 from app.services.attempts import score_attempt
@@ -99,6 +102,69 @@ def get_questionnaire(questionnaire_id: int, db: Session = Depends(get_db)):
     return questionnaire
 
 
+@router.put("/{questionnaire_id}", response_model=QuestionnaireDetail)
+def update_questionnaire(
+    questionnaire_id: int,
+    payload: QuestionnaireUpdate,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(require_admin),
+):
+    questionnaire = db.get(models.Questionnaire, questionnaire_id)
+    if not questionnaire:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Questionnaire not found")
+    if payload.title is not None:
+        if not payload.title.strip():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Title is required")
+        questionnaire.title = payload.title
+    if payload.description is not None:
+        questionnaire.description = payload.description
+    db.commit()
+    db.refresh(questionnaire)
+    return questionnaire
+
+
+@router.delete("/{questionnaire_id}", response_model=QuestionnaireRead)
+def delete_questionnaire(
+    questionnaire_id: int,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(require_admin),
+):
+    questionnaire = db.get(models.Questionnaire, questionnaire_id)
+    if not questionnaire:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Questionnaire not found")
+
+    has_attempts = db.scalar(
+        select(models.Attempt.id).where(models.Attempt.questionnaire_id == questionnaire_id).limit(1)
+    )
+
+    if has_attempts:
+        # Soft-delete: inactivate to preserve student history
+        questionnaire.is_active = False
+        db.commit()
+        db.refresh(questionnaire)
+        return questionnaire
+    else:
+        # Hard-delete: no student data to preserve
+        db.delete(questionnaire)
+        db.commit()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch("/{questionnaire_id}/activate", response_model=QuestionnaireRead)
+def activate_questionnaire(
+    questionnaire_id: int,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(require_admin),
+):
+    questionnaire = db.get(models.Questionnaire, questionnaire_id)
+    if not questionnaire:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Questionnaire not found")
+    questionnaire.is_active = True
+    db.commit()
+    db.refresh(questionnaire)
+    return questionnaire
+
+
 @router.post("/{questionnaire_id}/questions", response_model=QuestionRead, status_code=status.HTTP_201_CREATED)
 def add_question(
     questionnaire_id: int, payload: QuestionCreate, db: Session = Depends(get_db), _: models.User = Depends(require_admin)
@@ -145,6 +211,73 @@ def list_questions(questionnaire_id: int, db: Session = Depends(get_db)):
     return questions
 
 
+@router.put("/{questionnaire_id}/questions/{question_id}", response_model=QuestionRead)
+def update_question(
+    questionnaire_id: int,
+    question_id: int,
+    payload: QuestionUpdate,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(require_admin),
+):
+    question = db.scalars(
+        select(models.Question).where(
+            models.Question.id == question_id,
+            models.Question.questionnaire_id == questionnaire_id,
+        )
+    ).first()
+    if not question:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question not found")
+
+    if payload.statement is not None:
+        question.statement = payload.statement
+
+    if payload.options is not None:
+        if not payload.options:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A question requires at least one option")
+        if not any(opt.is_correct for opt in payload.options):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least one option must be correct")
+        letters = [opt.letter for opt in payload.options]
+        if len(set(letters)) != len(letters):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Option letters must be unique")
+
+        for old_opt in list(question.options):
+            db.delete(old_opt)
+        db.flush()
+
+        for option in payload.options:
+            db.add(
+                models.Option(
+                    question_id=question.id,
+                    letter=option.letter,
+                    text=option.text,
+                    is_correct=option.is_correct,
+                )
+            )
+
+    db.commit()
+    db.refresh(question)
+    return question
+
+
+@router.delete("/{questionnaire_id}/questions/{question_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_question(
+    questionnaire_id: int,
+    question_id: int,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(require_admin),
+):
+    question = db.scalars(
+        select(models.Question).where(
+            models.Question.id == question_id,
+            models.Question.questionnaire_id == questionnaire_id,
+        )
+    ).first()
+    if not question:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question not found")
+    db.delete(question)
+    db.commit()
+
+
 @router.post("/{questionnaire_id}/attempts", response_model=AttemptResult, status_code=status.HTTP_201_CREATED)
 def submit_attempt(
     questionnaire_id: int,
@@ -152,6 +285,12 @@ def submit_attempt(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(require_student),
 ):
+    questionnaire = db.get(models.Questionnaire, questionnaire_id)
+    if questionnaire and not questionnaire.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Este questionário foi desativado e não aceita novas tentativas",
+        )
     attempt = score_attempt(db, questionnaire_id=questionnaire_id, answers=payload.answers, student_id=current_user.id)
     answers = [
         AttemptAnswerResult(
