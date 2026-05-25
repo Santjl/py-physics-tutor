@@ -12,6 +12,7 @@ bcrypt
 PyMuPDF
 httpx
 google-genai
+google-cloud-discoveryengine
 python-multipart
 pytest
 pytest-asyncio

@@ -7,14 +7,21 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/quiz_db"
     llm_provider: str = "google"
     embed_provider: str = "google"
+    retrieval_provider: str = "google"
     ollama_base_url: str = "http://localhost:11434"
     ollama_chat_model: str = "qwen3:1.7b"
     ollama_embed_model: str = "nomic-embed-text"
     google_cloud_project: str | None = None
+    google_cloud_project_id: str | None = None
     google_cloud_location: str = "us-central1"
     google_genai_api_key: str | None = None
     google_chat_model: str = "gemini-2.5-flash"
     google_embed_model: str = "text-embedding-005"
+    google_discovery_engine_id: str | None = None
+    google_discovery_data_store_id: str | None = None
+    google_discovery_serving_config: str = "default_search"
+    google_application_credentials: str | None = None
+    google_agent_search_page_size: int = 4
     secret_key: str = "change-me"
     access_token_expire_hours: int = 24
 
@@ -36,6 +43,7 @@ class Settings(BaseSettings):
     feedback_enable_validator: bool = False
     feedback_enable_relevance_filter: bool = True
     max_concurrent_embeddings: int = 2
+    max_concurrent_retrievals: int = 4
     max_concurrent_llm_calls: int = 2
     max_concurrent_validations: int = 1
     question_feedback_timeout_seconds: int = 120

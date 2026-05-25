@@ -5,6 +5,24 @@
 http://localhost:8000
 ```
 
+## ConfiguraÃ§Ã£o de Retrieval
+
+O endpoint de feedback suporta dois modos de retrieval:
+
+- `RETRIEVAL_PROVIDER=local`: usa os `chunks` armazenados no banco (`pgvector` + busca local)
+- `RETRIEVAL_PROVIDER=google`: usa Google Agent Search / Discovery Engine
+
+Para o modo `google`, configure tambÃ©m:
+
+- `GOOGLE_CLOUD_PROJECT_ID`
+- `GOOGLE_DISCOVERY_ENGINE_ID` ou `GOOGLE_DISCOVERY_DATA_STORE_ID`
+- `GOOGLE_DISCOVERY_SERVING_CONFIG` (padrÃ£o: `default_search`)
+- `GOOGLE_AGENT_SEARCH_PAGE_SIZE` (padrÃ£o: `4`)
+- credenciais Google Cloud com acesso ao Discovery Engine, por exemplo `GOOGLE_APPLICATION_CREDENTIALS`
+
+ObservaÃ§Ã£o:
+- `GOOGLE_GENAI_API_KEY` sozinho Ã© suficiente para Gemini, mas nÃ£o para o retrieval do Discovery Engine.
+
 ## Autenticação
 
 A API usa autenticação JWT (JSON Web Tokens). Para endpoints protegidos, inclua o token no header:

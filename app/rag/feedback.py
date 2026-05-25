@@ -48,9 +48,11 @@ from app.rag.feedback_parser import (
     map_source_ids_to_chunks,
 )
 from app.rag.feedback_prompts import build_system_prompt_per_question, build_user_prompt_for_question
-from app.rag.google_client import GoogleGenAIChatClient
+from app.rag.google_client import GoogleGenAIChatClient, QuotaExceededError
+from app.rag.google_agent_search import GoogleAgentSearchService, build_agent_search_query
 from app.rag.feedback_validator import ValidationResult, validate_feedback, validate_feedback_basic
 from app.rag.relevance_filter import filter_chunks_by_relevance
+from app.rag.providers import RetrievedContextItem
 from app.rag.retrieval import embed_queries, retrieve_chunks, retrieve_exercise_chunks
 from app.schemas import FeedbackMetadata, FeedbackQuestionError, FeedbackResponse, PerQuestionFeedback
 
@@ -58,6 +60,8 @@ logger = logging.getLogger(__name__)
 
 
 def _is_quota_error(exc: Exception) -> bool:
+    if isinstance(exc, QuotaExceededError):
+        return True
     text = str(exc).upper()
     return "429" in text or "RESOURCE_EXHAUSTED" in text or "TOO MANY REQUESTS" in text
 
@@ -70,6 +74,8 @@ class _AttemptCircuitState:
 
     def register_exception(self, exc: Exception) -> None:
         if not _is_quota_error(exc):
+            return
+        if isinstance(exc, QuotaExceededError) and "CIRCUIT IS OPEN" in str(exc).upper():
             return
         with self._lock:
             self.quota_errors += 1
@@ -94,6 +100,65 @@ def _retrieval_query_for_answer(ans: models.Answer) -> str:
     )
 
 
+def _google_query_for_answer(ans: models.Answer) -> str:
+    correct_opt = next((o for o in ans.question.options if o.is_correct), None)
+    correct_txt = f"{correct_opt.letter} - {correct_opt.text}" if correct_opt else "Unknown"
+    alternatives = [f"{opt.letter} - {opt.text}" for opt in ans.question.options]
+    selected_txt = f"{ans.option.letter} - {ans.option.text}"
+    return build_agent_search_query(
+        question=ans.question.statement,
+        topic=None,
+        correct_answer=correct_txt,
+        alternatives=alternatives,
+        student_answer=selected_txt,
+    )
+
+
+def _google_item_to_chunk(item: RetrievedContextItem, chunk_index: int) -> models.Chunk:
+    struct_data = item.metadata.get("struct_data") if item.metadata else {}
+    derived_struct_data = item.metadata.get("derived_struct_data") if item.metadata else {}
+
+    chapter_title = None
+    section_title = None
+    if isinstance(struct_data, dict):
+        chapter_title = struct_data.get("chapter") or struct_data.get("chapter_title")
+        section_title = struct_data.get("section") or struct_data.get("section_title")
+    if not chapter_title and isinstance(derived_struct_data, dict):
+        chapter_title = derived_struct_data.get("chapter") or derived_struct_data.get("chapter_title")
+    if not section_title and isinstance(derived_struct_data, dict):
+        section_title = derived_struct_data.get("section") or derived_struct_data.get("section_title")
+
+    filename = item.title or item.source_uri or f"google-result-{chunk_index}"
+    page = item.page_number or max(1, chunk_index)
+    text = item.snippet or "Sem trecho disponivel."
+
+    return models.Chunk(
+        id=-(chunk_index + 1),
+        document_id=0,
+        filename=filename,
+        page=page,
+        chunk_index=chunk_index,
+        text=text,
+        embedding=None,
+        chunk_type="theory",
+        chapter_title=str(chapter_title) if chapter_title else None,
+        section_title=str(section_title) if section_title else None,
+    )
+
+
+def _retrieve_google_chunks_for_answer(
+    service: GoogleAgentSearchService,
+    ans: models.Answer,
+    top_k: int,
+) -> tuple[int, list[models.Chunk]]:
+    query = _google_query_for_answer(ans)
+    items = service.search_relevant_context(query, page_size=top_k)
+    return (
+        ans.question_id,
+        [_google_item_to_chunk(item, idx) for idx, item in enumerate(items[:top_k], start=1)],
+    )
+
+
 def _retrieve_per_question(
     db,
     attempt: models.Attempt,
@@ -107,6 +172,30 @@ def _retrieve_per_question(
     per_q: dict[int, list[models.Chunk]] = {}
     per_q_ex: dict[int, list[models.Chunk]] = {}
     incorrect_answers = [ans for ans in attempt.answers if not ans.is_correct]
+    settings = get_settings()
+    retrieval_provider = settings.retrieval_provider.lower().strip()
+    logger.info(
+        "retrieve_per_question provider=%s questions=%d top_k=%d exercise_top_k=%d",
+        retrieval_provider,
+        len(incorrect_answers),
+        top_k,
+        exercise_top_k,
+    )
+
+    if retrieval_provider == "google":
+        service = GoogleAgentSearchService()
+        max_workers = max(1, min(len(incorrect_answers), settings.max_concurrent_retrievals))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_to_qid = {
+                pool.submit(_retrieve_google_chunks_for_answer, service, ans, top_k): ans.question_id
+                for ans in incorrect_answers
+            }
+            for future, qid in future_to_qid.items():
+                qid, chunks = future.result()
+                per_q[qid] = chunks
+                per_q_ex[qid] = []
+        return per_q, per_q_ex
+
     queries = [_retrieval_query_for_answer(ans) for ans in incorrect_answers]
 
     vectors_by_qid: dict[int, list[float] | None] = {ans.question_id: None for ans in incorrect_answers}
@@ -149,6 +238,9 @@ def _process_one_question(
     t1 = time.perf_counter()
 
     try:
+        if circuit_state is not None and circuit_state.quota_exceeded():
+            raise QuotaExceededError("Per-attempt quota circuit is open")
+
         # --- Relevance filtering ---
         settings = get_settings()
         use_relevance_filter = settings.feedback_enable_relevance_filter
@@ -317,7 +409,16 @@ def _process_one_question(
         if circuit_state is not None:
             circuit_state.register_exception(exc)
         logger.exception("LLM failed for question %d, falling back", ans.question_id)
-        return _sanitize_per_question_feedback(_default_per_question_feedback(ans, chunks))
+        fallback_feedback = _default_per_question_feedback(ans, chunks)
+        if _is_quota_error(exc):
+            fallback_feedback.student_feedback = (
+                "O sistema atingiu o limite temporario de geracao de feedback. "
+                "Tente novamente mais tarde."
+            )
+            fallback_feedback.study_suggestion = (
+                "Use as fontes indicadas abaixo e tente gerar o feedback novamente em alguns minutos."
+            )
+        return _sanitize_per_question_feedback(fallback_feedback)
     finally:
         logger.info(
             "llm.invoke.question: %.2fs (question_id=%d fallback=%s)",
@@ -325,6 +426,28 @@ def _process_one_question(
             ans.question_id,
             fallback,
         )
+
+
+def _process_one_question_with_timing(
+    llm,
+    system_prompt: str,
+    ans: models.Answer,
+    chunks: Sequence[models.Chunk],
+    exercise_chunks: Sequence[models.Chunk],
+    started_at: dict[int, float],
+    validation_semaphore: threading.BoundedSemaphore | None = None,
+    circuit_state: _AttemptCircuitState | None = None,
+) -> PerQuestionFeedback:
+    started_at[ans.question_id] = time.perf_counter()
+    return _process_one_question(
+        llm,
+        system_prompt,
+        ans,
+        chunks,
+        exercise_chunks,
+        validation_semaphore,
+        circuit_state,
+    )
 
 
 def _build_safe_fallback(
@@ -406,24 +529,22 @@ def _generate_feedback_with_llm(
 
     results: dict[int, PerQuestionFeedback] = {}
     question_errors: list[FeedbackQuestionError] = []
-    start_times: dict = {}
+    started_at_by_qid: dict[int, float] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         future_to_qid = {
             pool.submit(
-                _process_one_question,
+                _process_one_question_with_timing,
                 llm,
                 system_prompt,
                 ans,
                 per_q_chunks.get(ans.question_id, []),
                 per_q_exercises.get(ans.question_id, []),
+                started_at_by_qid,
                 validation_semaphore,
                 circuit_state,
             ): ans.question_id
             for ans in incorrect_answers
         }
-
-        for future in future_to_qid:
-            start_times[future] = time.perf_counter()
 
         pending = set(future_to_qid)
         while pending:
@@ -449,7 +570,10 @@ def _generate_feedback_with_llm(
             now = time.perf_counter()
             timed_out = {
                 future for future in not_done
-                if now - start_times.get(future, now) > question_timeout
+                if (
+                    (started_at := started_at_by_qid.get(future_to_qid[future])) is not None
+                    and now - started_at > question_timeout
+                )
             }
             for future in timed_out:
                 qid = future_to_qid[future]
@@ -473,7 +597,7 @@ def _generate_feedback_with_llm(
 
     per_question = [results[ans.question_id] for ans in incorrect_answers if ans.question_id in results]
     summary = _build_summary(attempt)
-    global_refs = _collect_global_references(per_question)[:8]
+    global_refs = _collect_global_references(per_question, per_q_chunks)[:8]
     global_concepts = _collect_global_concepts(per_question)
 
     # Determine overall validator status

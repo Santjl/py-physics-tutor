@@ -49,6 +49,45 @@ def _strip_where_to_study(text: str) -> str:
     return text[:idx].strip()
 
 
+def _format_pages(pages: Sequence[int]) -> str:
+    unique_pages = sorted(set(pages))
+    if not unique_pages:
+        return ""
+    if len(unique_pages) == 1:
+        return f"pagina {unique_pages[0]}"
+    return "paginas " + ", ".join(str(page) for page in unique_pages)
+
+
+def _build_study_location_text(study: Sequence[StudyItem]) -> str | None:
+    parts: list[str] = []
+    for item in study:
+        detail_parts = [item.filename]
+        pages_text = _format_pages(item.pages)
+        if pages_text:
+            detail_parts.append(pages_text)
+        if item.chapter:
+            detail_parts.append(item.chapter)
+        if item.topic:
+            detail_parts.append(f"topico {item.topic}")
+        parts.append(", ".join(detail_parts))
+
+    if not parts:
+        return None
+    return "Onde estudar: " + "; ".join(parts) + "."
+
+
+def _append_study_location_text(text: str | None, study: Sequence[StudyItem]) -> str | None:
+    base = (text or "").strip()
+    location_text = _build_study_location_text(study)
+    if not location_text:
+        return base or None
+    if location_text in base:
+        return base or None
+    if not base:
+        return location_text
+    return f"{base}\n\n{location_text}"
+
+
 # ---------------------------------------------------------------------------
 # Study item builders
 # ---------------------------------------------------------------------------
@@ -71,6 +110,7 @@ def _sanitize_study_items(study: Sequence[StudyItem]) -> list[StudyItem]:
                 pages=sorted(set(item.pages)),
                 chapter=item.chapter if item.chapter else None,
                 topic=item.topic if item.topic else None,
+                reason=item.reason if item.reason else None,
             )
         )
     return sanitized
@@ -83,17 +123,21 @@ def _build_study_groups(
 ) -> list[StudyItem]:
     topic = _extract_topic_from_text(topic_text)
 
-    grouped: dict[tuple[str, str | None], set[int]] = {}
+    grouped: dict[tuple[str, str | None, str | None], set[int]] = {}
     for chunk in chunks:
-        key = (chunk.filename, chunk.chapter_title)
+        key = (chunk.filename, chunk.chapter_title, chunk.section_title)
         grouped.setdefault(key, set()).add(chunk.page)
 
     study_items: list[StudyItem] = []
-    for (filename, chapter_title), pages in grouped.items():
+    for (filename, chapter_title, section_title), pages in grouped.items():
+        if section_title and chapter_title:
+            chapter_label = f"{chapter_title} / {section_title}"
+        else:
+            chapter_label = chapter_title or section_title or None
         study_items.append(
             StudyItem(
                 filename=filename,
-                chapter=chapter_title or None,
+                chapter=chapter_label,
                 pages=sorted(pages),
                 topic=topic,
                 reason=reason,
@@ -107,6 +151,7 @@ def _build_study_groups(
 # ---------------------------------------------------------------------------
 
 def _sanitize_per_question_feedback(pq: PerQuestionFeedback) -> PerQuestionFeedback:
+    sanitized_study = _sanitize_study_items(pq.study)
     return PerQuestionFeedback(
         question_id=pq.question_id,
         selected_option_id=pq.selected_option_id,
@@ -122,10 +167,20 @@ def _sanitize_per_question_feedback(pq: PerQuestionFeedback) -> PerQuestionFeedb
         needs_teacher_review=pq.needs_teacher_review,
         related_concepts=[c.strip() for c in pq.related_concepts if c.strip()][:8],
         tip=_truncate_chars(pq.tip or "", TIP_MAX_CHARS) if pq.tip else None,
-        study_suggestion=_truncate_chars(pq.study_suggestion or "", STUDY_SUGGESTION_MAX_CHARS) or None,
-        student_feedback=_truncate_chars(pq.student_feedback or "", STUDENT_FEEDBACK_MAX_CHARS) or None,
+        study_suggestion=(
+            _truncate_chars(
+                _append_study_location_text(pq.study_suggestion, sanitized_study) or "",
+                STUDY_SUGGESTION_MAX_CHARS,
+            ) or None
+        ),
+        student_feedback=(
+            _truncate_chars(
+                _append_study_location_text(pq.student_feedback, sanitized_study) or "",
+                STUDENT_FEEDBACK_MAX_CHARS,
+            ) or None
+        ),
         similar_question=pq.similar_question,
-        study=_sanitize_study_items(pq.study),
+        study=sanitized_study,
         study_recommendation=pq.study_recommendation,
     )
 
@@ -179,16 +234,36 @@ def _build_summary(attempt: models.Attempt) -> SummaryFeedback:
     )
 
 
-def _collect_global_references(per_question: Sequence[PerQuestionFeedback]) -> list[Citation]:
+def _citation_snippet_from_chunk(chunk: models.Chunk, limit: int = 220) -> str:
+    snippet = (chunk.text or "").replace("\n", " ").strip()
+    return _truncate_text(snippet, limit=limit)
+
+
+def _collect_global_references(
+    per_question: Sequence[PerQuestionFeedback],
+    per_q_chunks: Mapping[int, Sequence[models.Chunk]] | None = None,
+) -> list[Citation]:
     global_refs: list[Citation] = []
     seen: set[tuple[str, int]] = set()
+    per_q_chunks = per_q_chunks or {}
     for pq in per_question:
+        chunk_lookup = {
+            (chunk.filename, chunk.page): chunk
+            for chunk in per_q_chunks.get(pq.question_id, [])
+        }
         for study in pq.study:
             for page in study.pages:
                 key = (study.filename, page)
                 if key not in seen:
                     seen.add(key)
-                    global_refs.append(Citation(filename=study.filename, page=page, snippet=""))
+                    chunk = chunk_lookup.get(key)
+                    global_refs.append(
+                        Citation(
+                            filename=study.filename,
+                            page=page,
+                            snippet=_citation_snippet_from_chunk(chunk) if chunk else "",
+                        )
+                    )
     return global_refs
 
 
@@ -217,7 +292,7 @@ def _default_feedback_from_per_q(
         per_question.append(_sanitize_per_question_feedback(_default_per_question_feedback(ans, chunks)))
 
     summary = _build_summary(attempt)
-    global_refs = _collect_global_references(per_question)
+    global_refs = _collect_global_references(per_question, per_q_chunks)
     return FeedbackResponse(
         attempt_id=attempt.id,
         summary=summary,

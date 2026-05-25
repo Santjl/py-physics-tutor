@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import random
+import re
+import threading
 import time
 from types import SimpleNamespace
 from typing import Any, Iterable
@@ -16,6 +18,14 @@ INITIAL_BACKOFF = 1.0
 MAX_BACKOFF = 10.0
 EMBED_BATCH_SIZE = 100
 MAX_PROMPT_CHARS = 900_000
+QUOTA_COOLDOWN_SECONDS = 30.0
+
+_quota_lock = threading.Lock()
+_quota_cooldown_until = 0.0
+
+
+class QuotaExceededError(RuntimeError):
+    """Raised when the provider returns a quota/rate-limit error."""
 
 
 def _stringify_message_content(content: Any) -> str:
@@ -99,10 +109,14 @@ class _GoogleGenAIClientBase:
         return self._client
 
     @staticmethod
+    def _is_quota_error(exc: Exception) -> bool:
+        message = str(exc).upper()
+        return "429" in message or "RESOURCE_EXHAUSTED" in message or "TOO MANY REQUESTS" in message
+
+    @staticmethod
     def _is_retryable(exc: Exception) -> bool:
         """Treat quota/rate limits as retryable and fail fast on permanent 4xx."""
-        message = str(exc).upper()
-        if "429" in message or "RESOURCE_EXHAUSTED" in message or "TOO MANY REQUESTS" in message:
+        if _GoogleGenAIClientBase._is_quota_error(exc):
             return True
 
         try:
@@ -123,6 +137,40 @@ class _GoogleGenAIClientBase:
         # Jitter reduces thundering-herd retries when many requests fail together.
         jitter = random.uniform(0.0, current * 0.25)
         return min(current * 2 + jitter, MAX_BACKOFF)
+
+    @staticmethod
+    def _retry_after_seconds(exc: Exception) -> float | None:
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers:
+            retry_after = headers.get("retry-after") or headers.get("Retry-After")
+            if retry_after:
+                try:
+                    return max(0.0, float(retry_after))
+                except (TypeError, ValueError):
+                    pass
+
+        match = re.search(r"RETRY[- ]AFTER[^0-9]*([0-9]+(?:\.[0-9]+)?)", str(exc), flags=re.IGNORECASE)
+        if match:
+            return max(0.0, float(match.group(1)))
+        return None
+
+    def _wait_for_quota_cooldown(self) -> None:
+        while True:
+            with _quota_lock:
+                remaining = _quota_cooldown_until - time.monotonic()
+            if remaining <= 0:
+                return
+            logger.warning("Quota cooldown active for %.1fs; delaying Gemini request", remaining)
+            time.sleep(min(remaining, 1.0))
+
+    def _activate_quota_cooldown(self, exc: Exception, fallback_seconds: float) -> float:
+        cooldown = self._retry_after_seconds(exc) or fallback_seconds or QUOTA_COOLDOWN_SECONDS
+        deadline = time.monotonic() + cooldown
+        with _quota_lock:
+            global _quota_cooldown_until
+            _quota_cooldown_until = max(_quota_cooldown_until, deadline)
+        return cooldown
 
 
 class GoogleGenAIEmbeddingClient(_GoogleGenAIClientBase):
@@ -170,6 +218,7 @@ class GoogleGenAIEmbeddingClient(_GoogleGenAIClientBase):
         backoff = INITIAL_BACKOFF
         for attempt in range(1, MAX_RETRIES + 1):
             try:
+                self._wait_for_quota_cooldown()
                 embeddings = self._embed_once(texts)
                 if len(embeddings) != len(texts):
                     raise RuntimeError(
@@ -181,6 +230,8 @@ class GoogleGenAIEmbeddingClient(_GoogleGenAIClientBase):
                 if not self._is_retryable(exc):
                     logger.error("Non-retryable error during embedding: %s", exc)
                     break
+                if self._is_quota_error(exc):
+                    backoff = max(backoff, self._activate_quota_cooldown(exc, QUOTA_COOLDOWN_SECONDS))
                 logger.warning(
                     "Embedding attempt %d/%d failed, retrying in %.1fs",
                     attempt,
@@ -192,6 +243,8 @@ class GoogleGenAIEmbeddingClient(_GoogleGenAIClientBase):
                     time.sleep(backoff)
                     backoff = self._next_backoff(backoff)
 
+        if last_error and self._is_quota_error(last_error):
+            raise QuotaExceededError("Google embedding quota exhausted") from last_error
         raise RuntimeError("Failed to embed text") from last_error
 
     def _normalize_vector(self, vec: Iterable[float] | None, idx: int, total: int) -> list[float]:
@@ -251,6 +304,7 @@ class GoogleGenAIChatClient(_GoogleGenAIClientBase):
         backoff = INITIAL_BACKOFF
         for attempt in range(1, MAX_RETRIES + 1):
             try:
+                self._wait_for_quota_cooldown()
                 client = self._get_client()
                 response = client.models.generate_content(
                     model=self.model,
@@ -263,6 +317,8 @@ class GoogleGenAIChatClient(_GoogleGenAIClientBase):
                 if not self._is_retryable(exc):
                     logger.error("Non-retryable error during generation: %s", exc)
                     break
+                if self._is_quota_error(exc):
+                    backoff = max(backoff, self._activate_quota_cooldown(exc, QUOTA_COOLDOWN_SECONDS))
                 logger.warning(
                     "Gemini attempt %d/%d failed, retrying in %.1fs",
                     attempt,
@@ -274,4 +330,6 @@ class GoogleGenAIChatClient(_GoogleGenAIClientBase):
                     time.sleep(backoff)
                     backoff = self._next_backoff(backoff)
 
+        if last_error and self._is_quota_error(last_error):
+            raise QuotaExceededError("Google generation quota exhausted") from last_error
         raise RuntimeError("Failed to generate content with Gemini") from last_error
