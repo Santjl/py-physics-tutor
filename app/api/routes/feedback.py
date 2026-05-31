@@ -10,7 +10,6 @@ from app import models
 from app.api.deps import get_db
 from app.api.routes.auth import require_admin, require_student
 from app.rag.feedback import generate_feedback
-from app.rag.feedback_constants import FEEDBACK_PROMPT_VERSION
 from app.schemas import AttemptAnswerResult, AttemptHistoryItem, AttemptResult, FeedbackResponse
 
 router = APIRouter(prefix="/attempts", tags=["feedback"])
@@ -90,15 +89,11 @@ def post_feedback(
     if attempt.student_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your attempt")
 
-    # Return cached feedback if it already exists (unless force=True or version mismatch)
+    # Return cached feedback if it already exists. Regeneration is explicit via force=True.
     existing = db.scalar(select(models.AttemptFeedback).where(models.AttemptFeedback.attempt_id == attempt_id))
     if existing and not force:
         cached = FeedbackResponse(**existing.data)
-        # Check if cached feedback was generated with current prompt version
-        cached_version = cached.metadata.prompt_version if cached.metadata else None
-        if cached_version == FEEDBACK_PROMPT_VERSION:
-            return _enrich_selected_options(cached, attempt)
-        # Version mismatch — regenerate
+        return _enrich_selected_options(cached, attempt)
 
     # Ensure answers and options are loaded
     db.execute(select(models.Answer).where(models.Answer.attempt_id == attempt_id)).all()

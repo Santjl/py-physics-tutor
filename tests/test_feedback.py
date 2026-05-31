@@ -1,4 +1,5 @@
 from app import models
+from app.api.routes import feedback as feedback_route
 
 
 def _login(client, email: str, password: str) -> str:
@@ -148,6 +149,44 @@ def test_list_my_attempts_has_feedback_true(client, admin_user, student_user, db
     resp = client.get("/attempts/me", headers={"Authorization": f"Bearer {student_token}"})
     item = next(i for i in resp.json() if i["attempt_id"] == attempt_id)
     assert item["has_feedback"] is True
+
+
+def test_post_feedback_returns_cached_feedback_without_version_regeneration(
+    client,
+    admin_user,
+    student_user,
+    db_session,
+    monkeypatch,
+):
+    admin_token = _login(client, admin_user.email, "secret")
+    student_token = _login(client, student_user.email, "secret")
+    attempt_id, _ = _create_attempt(client, admin_token, student_token)
+
+    first = client.post(
+        f"/attempts/{attempt_id}/feedback",
+        headers={"Authorization": f"Bearer {student_token}"},
+    )
+    assert first.status_code == 200, first.text
+
+    record = db_session.query(models.AttemptFeedback).filter_by(attempt_id=attempt_id).one()
+    cached_data = dict(record.data)
+    metadata = dict(cached_data.get("metadata") or {})
+    metadata["prompt_version"] = "old-version"
+    cached_data["metadata"] = metadata
+    record.data = cached_data
+    db_session.commit()
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("cached feedback should not regenerate without force=true")
+
+    monkeypatch.setattr(feedback_route, "generate_feedback", _fail_if_called)
+
+    second = client.post(
+        f"/attempts/{attempt_id}/feedback",
+        headers={"Authorization": f"Bearer {student_token}"},
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["metadata"]["prompt_version"] == "old-version"
 
 
 def test_list_all_attempts_admin(client, admin_user, student_user):
