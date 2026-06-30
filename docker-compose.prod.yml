@@ -1,0 +1,57 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-quiz_db}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  migrations:
+    build: .
+    restart: "no"
+    environment:
+      APP_ENV: prod
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-quiz_db}
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: .
+    restart: unless-stopped
+    environment:
+      APP_ENV: prod
+      PORT: 8000
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-quiz_db}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      LLM_PROVIDER: ${LLM_PROVIDER:-google}
+      EMBED_PROVIDER: ${EMBED_PROVIDER:-google}
+      RETRIEVAL_PROVIDER: ${RETRIEVAL_PROVIDER:-local}
+      GOOGLE_GENAI_API_KEY: ${GOOGLE_GENAI_API_KEY:-}
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
+      GOOGLE_CLOUD_PROJECT_ID: ${GOOGLE_CLOUD_PROJECT_ID:-}
+      GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION:-us-central1}
+      GOOGLE_DISCOVERY_ENGINE_ID: ${GOOGLE_DISCOVERY_ENGINE_ID:-}
+      GOOGLE_DISCOVERY_DATA_STORE_ID: ${GOOGLE_DISCOVERY_DATA_STORE_ID:-}
+      GOOGLE_DISCOVERY_SERVING_CONFIG: ${GOOGLE_DISCOVERY_SERVING_CONFIG:-default_search}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    ports:
+      - "8000:8000"
+
+volumes:
+  pgdata:

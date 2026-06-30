@@ -87,6 +87,19 @@ Notes:
 - If you run the API in Docker, pass through either `GOOGLE_CLOUD_PROJECT` plus Google ADC credentials, or `GOOGLE_GENAI_API_KEY`.
 - If you run the API on host instead of container, ensure it can reach your Postgres instance and that Google credentials are available in the environment.
 
+## Production Docker on a GCP VM
+1. Install Docker and the Docker Compose plugin on the VM.
+2. Copy `.env.production.example` to `.env.production` and set strong values for `POSTGRES_PASSWORD` and `SECRET_KEY`.
+3. Configure the Google/Gemini environment variables in `.env.production`.
+4. Open VM firewall ingress for TCP port `8000`, or put a reverse proxy in front of the API.
+5. Build and start the API plus Postgres:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml up --build -d
+```
+
+The production compose file starts `pgvector/pgvector:pg16`, waits for Postgres, runs `alembic upgrade head`, then starts the FastAPI container on port `8000`.
+
 ## Database migrations
 - Create: `alembic revision -m "message"`
 - Apply: `alembic upgrade head`

@@ -6,7 +6,10 @@ import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Mapping, Sequence
 
-from langchain_community.chat_models import ChatOllama
+try:
+    from langchain_ollama import ChatOllama
+except ImportError:  # pragma: no cover - compatibility with older installs
+    from langchain_community.chat_models import ChatOllama
 
 from app import models
 from app.core.config import get_settings

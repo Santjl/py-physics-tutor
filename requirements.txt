@@ -20,4 +20,5 @@ anyio
 typing-extensions
 langchain-core
 langchain-community
+langchain-ollama
 numpy
