@@ -1,7 +1,10 @@
 from types import SimpleNamespace
 import time
 
+import pytest
+
 from app import models
+from app.core.config import get_settings
 from app.rag.providers import RetrievedContextItem
 from app.schemas import FeedbackResponse, PerQuestionFeedback, SimilarExercise, StudyItem
 from app.rag import feedback as fb
@@ -567,3 +570,23 @@ def test_feedback_quota_circuit_skips_later_questions(monkeypatch):
         pq.student_feedback and "limite temporario" in pq.student_feedback.lower()
         for pq in response.per_question
     )
+
+def test_feedback_module_does_not_import_chat_ollama():
+    assert not hasattr(fb, "ChatOllama")
+
+
+def test_generate_feedback_rejects_ollama_provider(monkeypatch):
+    settings = get_settings()
+    original_env = settings.app_env
+    original_provider = settings.llm_provider
+    monkeypatch.setattr(fb, "_retrieve_per_question", lambda *args, **kwargs: ({}, {}))
+    settings.app_env = "prod"
+    settings.llm_provider = "ollama"
+
+    try:
+        with pytest.raises(RuntimeError, match="Ollama is not enabled in production"):
+            fb.generate_feedback(None, SimpleNamespace(answers=[]))
+    finally:
+        settings.app_env = original_env
+        settings.llm_provider = original_provider
+

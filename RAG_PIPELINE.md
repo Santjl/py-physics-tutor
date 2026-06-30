@@ -54,9 +54,9 @@ Tambem sao extraidos metadados estruturais via regex: titulo de capitulo (`Capit
 
 ### 1.4 Embedding
 
-**Arquivo:** `app/rag/ollama_client.py`
+**Arquivo:** `app/rag/google_client.py`
 
-Os textos dos chunks sao enviados ao Ollama (modelo `nomic-embed-text`) via HTTP POST para `/api/embed`. Cada texto e convertido em um vetor de **768 dimensoes**.
+Os textos dos chunks sao enviados ao Google embeddings (`GOOGLE_EMBED_MODEL`). Cada texto e convertido em um vetor normalizado para as dimensoes esperadas pelo banco.
 
 Mecanismos de resiliencia:
 
@@ -266,7 +266,7 @@ Resumo visual do fluxo para uma unica query:
 ```
 Query do aluno
     │
-    ├──► Embedding (Ollama) ──► Busca Semantica (pgvector cosine) ──► Ranking S
+    ├──► Embedding (Google) ──► Busca Semantica (pgvector cosine) ──► Ranking S
     │                                                                      │
     └──► Tokenizacao (PostgreSQL) ──► Busca BM25 (tsvector/tsquery) ──► Ranking B
                                                                            │
@@ -315,7 +315,7 @@ Cada questao recebe um prompt com:
 
 ### 3.3 Invocacao do LLM
 
-O `ChatOllama` (LangChain) envia o prompt ao modelo `llama3.1` com temperature=0 (determinismo maximo). O LLM retorna texto estruturado com secoes:
+O cliente Google/Gemini envia o prompt ao modelo configurado em `GOOGLE_CHAT_MODEL` com temperature=0. O LLM retorna texto estruturado com secoes:
 
 - **Explicacao** — raciocinio correto especifico para a questao.
 - **Erro conceitual do aluno** — deducao de qual confusao levou a resposta errada.
@@ -346,4 +346,4 @@ Quando `APP_ENV=test`:
 - **Retrieval** usa fallback SQLite (ordenacao por ID, sem busca vetorial).
 - **Feedback** retorna sempre o template padrao, sem invocar o LLM.
 
-Isso permite rodar toda a suite de testes sem dependencia do Ollama.
+Isso permite rodar toda a suite de testes sem dependencia de servicos externos de LLM.

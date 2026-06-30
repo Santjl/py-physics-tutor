@@ -6,11 +6,6 @@ import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Mapping, Sequence
 
-try:
-    from langchain_ollama import ChatOllama
-except ImportError:  # pragma: no cover - compatibility with older installs
-    from langchain_community.chat_models import ChatOllama
-
 from app import models
 from app.core.config import get_settings
 from app.rag.feedback_builder import (
@@ -645,13 +640,11 @@ def generate_feedback(db, attempt: models.Attempt) -> FeedbackResponse:
 
     provider = settings.llm_provider.lower().strip()
     if provider == "ollama":
-        llm = ChatOllama(
-            base_url=settings.ollama_base_url,
-            model=settings.ollama_chat_model,
-            temperature=0.0,
-        )
-    else:
-        llm = GoogleGenAIChatClient(temperature=0.0)
+        raise RuntimeError("Ollama is not enabled in production. Set LLM_PROVIDER=google.")
+    if provider != "google":
+        raise RuntimeError(f"Unsupported LLM_PROVIDER={settings.llm_provider!r}. Set LLM_PROVIDER=google.")
+
+    llm = GoogleGenAIChatClient(temperature=0.0)
 
     try:
         return _generate_feedback_with_llm(llm, attempt, per_q_chunks, per_q_exercises)

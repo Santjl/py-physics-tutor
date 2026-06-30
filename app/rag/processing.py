@@ -14,7 +14,6 @@ from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.rag.chunking import build_chunks, estimate_tokens, MAX_INPUT_TOKENS
 from app.rag.google_client import GoogleGenAIEmbeddingClient
-from app.rag.ollama_client import OllamaClient
 
 logger = logging.getLogger(__name__)
 
@@ -250,9 +249,11 @@ def process_document_inline(db: Session, document: models.Document, pdf_bytes: b
         texts = [c["text"] for c in chunks]
         provider = get_settings().embed_provider.lower().strip()
         if provider == "ollama":
-            client = OllamaClient()
-        else:
-            client = GoogleGenAIEmbeddingClient()
+            raise RuntimeError("Ollama embeddings are not enabled in production. Set EMBED_PROVIDER=google.")
+        if provider != "google":
+            raise RuntimeError(f"Unsupported EMBED_PROVIDER={provider!r}. Set EMBED_PROVIDER=google.")
+
+        client = GoogleGenAIEmbeddingClient()
         logger.info("Requesting embeddings for %d chunks", len(texts))
         embeddings = client.embed(texts)
         logger.info("Received %d embeddings", len(embeddings))

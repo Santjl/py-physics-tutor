@@ -2,7 +2,7 @@
 
 This document separates the two retrieval paths that currently exist in the project:
 
-1. Local retrieval from the `chunks` table + Gemini/Ollama generation
+1. Local retrieval from the `chunks` table + Gemini generation
 2. Google retrieval (Agent Search / Discovery Engine) + Gemini generation
 
 Both paths are connected to the main feedback endpoint through a retrieval-provider switch.

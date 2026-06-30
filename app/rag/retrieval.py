@@ -11,7 +11,6 @@ from pgvector.sqlalchemy import Vector
 from app import models
 from app.core.config import get_settings
 from app.rag.google_client import GoogleGenAIEmbeddingClient
-from app.rag.ollama_client import OllamaClient
 
 logger = logging.getLogger(__name__)
 
@@ -28,18 +27,6 @@ class GeminiEmbeddings:
     def embed_query(self, text: str) -> List[float]:
         return self.client.embed([text])[0]
 
-
-class OllamaEmbeddings:
-    """Embedding wrapper using Ollama HTTP API."""
-
-    def __init__(self) -> None:
-        self.client = OllamaClient()
-
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        return self.client.embed(texts)
-
-    def embed_query(self, text: str) -> List[float]:
-        return self.client.embed([text])[0]
 
 
 # ---------------------------------------------------------------------------
@@ -212,9 +199,11 @@ def embed_query(query: str) -> list[float]:
     settings = get_settings()
     provider = settings.embed_provider.lower().strip()
     if provider == "ollama":
-        vec = OllamaEmbeddings().embed_query(query)
-    else:
-        vec = GeminiEmbeddings().embed_query(query)
+        raise RuntimeError("Ollama embeddings are not enabled in production. Set EMBED_PROVIDER=google.")
+    if provider != "google":
+        raise RuntimeError(f"Unsupported EMBED_PROVIDER={settings.embed_provider!r}. Set EMBED_PROVIDER=google.")
+
+    vec = GeminiEmbeddings().embed_query(query)
     if not isinstance(vec, list) or not all(isinstance(x, (int, float)) for x in vec):
         raise RuntimeError("Embedding response is not a list of numbers")
     dim = models.EmbeddingType.dimensions
@@ -231,9 +220,11 @@ def embed_queries(queries: list[str]) -> list[list[float]]:
     settings = get_settings()
     provider = settings.embed_provider.lower().strip()
     if provider == "ollama":
-        vecs = OllamaEmbeddings().embed_documents(queries)
-    else:
-        vecs = GeminiEmbeddings().embed_documents(queries)
+        raise RuntimeError("Ollama embeddings are not enabled in production. Set EMBED_PROVIDER=google.")
+    if provider != "google":
+        raise RuntimeError(f"Unsupported EMBED_PROVIDER={settings.embed_provider!r}. Set EMBED_PROVIDER=google.")
+
+    vecs = GeminiEmbeddings().embed_documents(queries)
 
     dim = models.EmbeddingType.dimensions
     normalized: list[list[float]] = []

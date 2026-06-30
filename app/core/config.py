@@ -8,9 +8,6 @@ class Settings(BaseSettings):
     llm_provider: str = "google"
     embed_provider: str = "google"
     retrieval_provider: str = "google"
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_chat_model: str = "qwen3:1.7b"
-    ollama_embed_model: str = "nomic-embed-text"
     google_cloud_project: str | None = None
     google_cloud_project_id: str | None = None
     google_cloud_location: str = "us-central1"
@@ -50,7 +47,7 @@ class Settings(BaseSettings):
     max_quota_errors_per_attempt: int = 3
     enable_bm25_fallback: bool = True
 
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
 
 
 @lru_cache

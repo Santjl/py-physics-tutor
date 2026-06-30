@@ -16,8 +16,8 @@ FastAPI + SQLAlchemy backend to create questionnaires, collect attempts, and pow
 ## Environment
 - `DATABASE_URL` (e.g. `postgresql+psycopg://postgres:postgres@localhost:5432/quiz_db`)
 - `APP_ENV` = `dev|test|prod`
-- `LLM_PROVIDER` = `google|ollama` (default `google`)
-- `EMBED_PROVIDER` = `google|ollama` (default `google`)
+- `LLM_PROVIDER` = `google` (default `google`)
+- `EMBED_PROVIDER` = `google` (default `google`)
 - `RETRIEVAL_PROVIDER` = `local|google` (default `local`)
 - `GOOGLE_CLOUD_PROJECT` for Vertex AI auth
 - `GOOGLE_CLOUD_PROJECT_ID` for Discovery Engine / Agent Search resource paths
@@ -29,15 +29,11 @@ FastAPI + SQLAlchemy backend to create questionnaires, collect attempts, and pow
 - `GOOGLE_DISCOVERY_SERVING_CONFIG` (default `default_search`)
 - `GOOGLE_AGENT_SEARCH_PAGE_SIZE` (default `4`)
 - `GOOGLE_APPLICATION_CREDENTIALS` optional path to a service-account JSON for Discovery Engine / ADC
-- `OLLAMA_BASE_URL` (default `http://localhost:11434`)
-- `OLLAMA_CHAT_MODEL` (default `qwen3:1.7b`)
-- `OLLAMA_EMBED_MODEL` (default `nomic-embed-text`)
 
 Provider selection:
 - Default behavior uses Gemini on Google Cloud/API for both chat and embeddings.
 - Retrieval defaults to local database chunks; set `RETRIEVAL_PROVIDER=google` to use Google Agent Search / Discovery Engine retrieval in the feedback endpoint.
-- To keep Ollama available but not used, leave providers at default (`google`).
-- To switch back to Ollama later, set `LLM_PROVIDER=ollama` and/or `EMBED_PROVIDER=ollama`.
+- Ollama is not enabled in production; `LLM_PROVIDER=ollama` or `EMBED_PROVIDER=ollama` returns a configuration error.
 
 ## Local setup (host)
 1. Install Python 3.11+.
@@ -64,7 +60,7 @@ Documents (PR3):
 - Upload PDF: `POST /documents/upload` (multipart `file`) as admin. In test env, processing is synchronous; otherwise it runs in a background task.
 - Check status: `GET /documents/{id}`.
 - PDFs are parsed with PyMuPDF, chunked (~900 chars, 150 overlap), embedded via Gemini embeddings (`GOOGLE_EMBED_MODEL`, default `text-embedding-005`), and stored in `chunks` with pgvector.
-- RAG orchestration will use LangChain in PR4.
+- RAG orchestration uses Gemini via Google for generation and embeddings.
 - Each chunk is classified as `theory`, `exercise`, or `unknown` during ingestion (simple keyword heuristics) and optional chapter/section titles are stored when detected.
 
 Feedback (PR4):
