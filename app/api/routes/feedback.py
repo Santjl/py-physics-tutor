@@ -16,11 +16,14 @@ router = APIRouter(prefix="/attempts", tags=["feedback"])
 
 
 def _enrich_selected_options(response: FeedbackResponse, attempt: models.Attempt) -> FeedbackResponse:
-    """Fill in selected_option_id from actual answers when missing (e.g. old cached data)."""
+    """Fill in selected_option_id and question_statement from actual answers when missing (e.g. old cached data)."""
     answer_map = {ans.question_id: ans.selected_option_id for ans in attempt.answers}
+    statement_map = {ans.question_id: ans.question.statement for ans in attempt.answers}
     for pq in response.per_question:
         if pq.selected_option_id is None:
             pq.selected_option_id = answer_map.get(pq.question_id)
+        if pq.question_statement is None:
+            pq.question_statement = statement_map.get(pq.question_id)
     return response
 
 

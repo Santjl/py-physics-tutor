@@ -379,6 +379,7 @@ def _process_one_question(
         else:
             pq = PerQuestionFeedback(
                 question_id=ans.question_id,
+                question_statement=ans.question.statement,
                 selected_option_id=ans.selected_option_id,
                 is_correct=False,
                 status=status,
@@ -470,6 +471,7 @@ def _build_safe_fallback(
 
     return PerQuestionFeedback(
         question_id=ans.question_id,
+        question_statement=ans.question.statement,
         selected_option_id=ans.selected_option_id,
         is_correct=False,
         status="incorrect",

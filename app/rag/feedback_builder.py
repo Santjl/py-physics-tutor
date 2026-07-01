@@ -154,6 +154,7 @@ def _sanitize_per_question_feedback(pq: PerQuestionFeedback) -> PerQuestionFeedb
     sanitized_study = _sanitize_study_items(pq.study)
     return PerQuestionFeedback(
         question_id=pq.question_id,
+        question_statement=pq.question_statement,
         selected_option_id=pq.selected_option_id,
         is_correct=pq.is_correct,
         status=pq.status,
@@ -203,6 +204,7 @@ def _default_per_question_feedback(
         )
     return PerQuestionFeedback(
         question_id=ans.question_id,
+        question_statement=ans.question.statement,
         selected_option_id=ans.selected_option_id,
         is_correct=ans.is_correct,
         status="correct" if ans.is_correct else "incorrect",

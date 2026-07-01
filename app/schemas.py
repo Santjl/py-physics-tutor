@@ -143,6 +143,7 @@ class FeedbackQuestionError(BaseModel):
 
 class PerQuestionFeedback(BaseModel):
     question_id: int
+    question_statement: Optional[str] = None
     selected_option_id: Optional[int] = None
     is_correct: bool
     status: Literal["correct", "incorrect", "partially_correct"] = "incorrect"
